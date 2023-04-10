@@ -86,20 +86,26 @@ def hash_file(file_path):
 
     return file_hash.hexdigest()
 
-def should_copy(src_file_path, dest_file_path, use_hash):
+def should_copy(src_file_path, dest_file_path, use_hash, compare_mod_date):
     if not os.path.exists(dest_file_path):
         return True
 
-    if not use_hash:
+    if not use_hash and not compare_mod_date:
         return False
 
     if os.path.getsize(src_file_path) != os.path.getsize(dest_file_path):
         return True
 
-    src_hash = hash_file(src_file_path)
-    dest_hash = hash_file(dest_file_path)
+    if compare_mod_date:
+        src_mod_time = os.path.getmtime(src_file_path)
+        dest_mod_time = os.path.getmtime(dest_file_path)
+        return src_mod_time > dest_mod_time
 
-    return src_hash != dest_hash
+    if use_hash:
+        src_hash = hash_file(src_file_path)
+        dest_hash = hash_file(dest_file_path)
+
+        return src_hash != dest_hash
 
 def is_system_directory(folder_path):
     return os.path.isdir(folder_path) and ctypes.windll.kernel32.GetFileAttributesW(folder_path) & 0x4 == 0x4
@@ -194,13 +200,13 @@ def sync_directories(src, dest, status_text, progress_bar, use_hash, remove_exce
                     
                     src_file_path = os.path.join(src_root, src_file)
                     dest_file_path = os.path.join(dest_root, src_file)
-                    if should_copy(src_file_path, dest_file_path, use_hash.get()):
+                    if should_copy(src_file_path, dest_file_path, use_hash.get(), compare_mod_date.get()):
                         copied_count += 1
                         executor.submit(copy_file, src_file_path, dest_file_path, status_text)
 
                     # Update the current source file path label
                     truncated_src_file_path = src_file_path[:50] + (src_file_path[50:] and '...')
-                    root.after_idle(current_file_var.set, f"Status: {truncated_src_file_path}")
+                    root.after_idle(current_file_var.set, f"{truncated_src_file_path}")
 
                     if stop_sync_flag:
                         root.after_idle(status_text.insert, END, "Synchronization stopped by user.\n")
@@ -262,6 +268,7 @@ src_folder_path = StringVar()
 dest_folder_path = StringVar()
 use_hash = BooleanVar(value=False)
 remove_excess = BooleanVar(value=True)
+compare_mod_date = BooleanVar(value=True)
 
 ttk.Label(mainframe, text="Source directory:").grid(column=0, row=0, sticky=W)
 src_folder_entry = ttk.Entry(mainframe, width=50, textvariable=src_folder_path)
@@ -275,6 +282,7 @@ ttk.Button(mainframe, text="Browse", command=browse_dest_directory).grid(column=
 
 ttk.Checkbutton(mainframe, text="Use xxhash to compare files", variable=use_hash).grid(column=1, row=2, sticky=W)
 ttk.Checkbutton(mainframe, text="Remove excess files and directories at the destination", variable=remove_excess).grid(column=1, row=3, sticky=W)
+ttk.Checkbutton(mainframe, text="Compare and copy files by modified date", variable=compare_mod_date).grid(column=1, row=4, sticky=W)
 
 start_button = ttk.Button(mainframe, text="Start", command=start_sync_thread)
 start_button.grid(column=0, row=4, sticky=W)
