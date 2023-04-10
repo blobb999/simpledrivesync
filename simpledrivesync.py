@@ -5,9 +5,21 @@ import ctypes
 import hashlib
 from tkinter import filedialog, messagebox, Tk, Button, Label, Entry, StringVar, Text, Scrollbar, END, N, S, E, W, Frame
 from tkinter import ttk
+from concurrent.futures import ThreadPoolExecutor
 
 stop_sync_flag = False
 deleted_count = 0
+
+def copy_file(src_file_path, dest_file_path, status_text):
+    try:
+        shutil.copy2(src_file_path, dest_file_path)
+        status_text.insert(END, f"Copied file: {dest_file_path}\n")
+        status_text.see(END)
+        status_text.update()
+    except Exception as e:
+        status_text.insert(END, f"Error copying file {src_file_path} to {dest_file_path}: {e}\n")
+        status_text.see(END)
+        status_text.update()
 
 def browse_src_directory():
     directory = filedialog.askdirectory()
@@ -108,45 +120,38 @@ def sync_directories(src, dest, status_text, progress_bar):
         return copied_count, deleted_count
 
     try:
-        for src_root, src_dirs, src_files in os.walk(src):
-            dest_root = os.path.join(dest, os.path.relpath(src_root, src))
+        with ThreadPoolExecutor() as executor:
+            for src_root, src_dirs, src_files in os.walk(src):
+                dest_root = os.path.join(dest, os.path.relpath(src_root, src))
 
-            for src_dir in src_dirs:
-                dest_dir = os.path.join(dest_root, src_dir)
-                if not os.path.exists(dest_dir):
-                    try:
-                        os.makedirs(dest_dir)
+                for src_dir in src_dirs:
+                    dest_dir = os.path.join(dest_root, src_dir)
+                    if not os.path.exists(dest_dir):
+                        try:
+                            os.makedirs(dest_dir)
+                            copied_count += 1
+                            status_text.insert(END, f"Created directory: {dest_dir}\n")
+                            status_text.see(END)
+                            status_text.update()
+                        except Exception as e:
+                            status_text.insert(END, f"Error creating directory {dest_dir}: {e}\n")
+                            status_text.see(END)
+                            status_text.update()
+
+                for src_file in src_files:
+                    if stop_sync_flag:
+                        break
+                    src_file_path = os.path.join(src_root, src_file)
+                    dest_file_path = os.path.join(dest_root, src_file)
+                    if should_copy(src_file_path, dest_file_path):
                         copied_count += 1
-                        status_text.insert(END, f"Created directory: {dest_dir}\n")
-                        status_text.see(END)
-                        status_text.update()
-                    except Exception as e:
-                        status_text.insert(END, f"Error creating directory {dest_dir}: {e}\n")
-                        status_text.see(END)
-                        status_text.update()
+                        executor.submit(copy_file, src_file_path, dest_file_path, status_text)
 
-            for src_file in src_files:
                 if stop_sync_flag:
-                    break
-                src_file_path = os.path.join(src_root, src_file)
-                dest_file_path = os.path.join(dest_root, src_file)
-                if should_copy(src_file_path, dest_file_path):
-                    try:
-                        shutil.copy2(src_file_path, dest_file_path)
-                        copied_count += 1
-                        status_text.insert(END, f"Copied file: {dest_file_path}\n")
-                        status_text.see(END)
-                        status_text.update()
-                    except Exception as e:
-                        status_text.insert(END, f"Error copying file {src_file_path} to {dest_file_path}: {e}\n")
-                        status_text.see(END)
-                        status_text.update()
-
-            if stop_sync_flag:
-                status_text.insert(END, "Synchronization stopped by user.\n")
-                status_text.see(END)
-                status_text.update()
-                return copied_count, deleted_count
+                    status_text.insert(END, "Synchronization stopped by user.\n")
+                    status_text.see(END)
+                    status_text.update()
+                    return copied_count, deleted_count
 
         remove_excess_files_and_dirs(src, dest, status_text)
 
