@@ -4,39 +4,46 @@ import threading
 import ctypes
 import hashlib
 import xxhash
+import time
 from tkinter import filedialog, messagebox, Tk, Button, Label, Entry, StringVar, Text, Scrollbar, END, N, S, E, W, Frame, Checkbutton, BooleanVar
 from tkinter import ttk
 from concurrent.futures import ThreadPoolExecutor
 from tkinter.ttk import Sizegrip
 
-stop_sync_flag = False
-deleted_count = 0
-sync_thread = None
+class SyncApp:
+    def __init__(self):
+        self.stop_sync_flag = False
+        self.deleted_count = 0
+        self.sync_thread = None
+
+sync_app = SyncApp()
 
 def start_sync_thread():
-    global sync_thread
-    if sync_thread is not None and sync_thread.is_alive():
+    if sync_app.sync_thread is not None and sync_app.sync_thread.is_alive():
         messagebox.showerror("Error", "A synchronization process is already running.")
         return
 
-    sync_thread = threading.Thread(target=start_sync)
-    sync_thread.start()
+    # Re-enable the progress bar
+    sync_app.stop_sync_flag = False
+    progress_bar.grid(column=1, row=4, sticky=(E, W))
+    progress_bar.start()
+
+    sync_app.sync_thread = threading.Thread(target=start_sync)
+    sync_app.sync_thread.start()
 
 def update_status_text(text):
+    status_text.config(state="normal")
     status_text.insert(END, text)
     status_text.see(END)
-    root.after_idle(status_text.update)
+    status_text.config(state="disabled")
+    root.update_idletasks()
 
 def copy_file(src_file_path, dest_file_path, status_text):
     try:
         shutil.copy2(src_file_path, dest_file_path)
-        status_text.insert(END, f"Copied file: {dest_file_path}\n")
-        status_text.see(END)
-        status_text.update()
+        update_status_text(f"Copied file: {dest_file_path}\n")
     except Exception as e:
-        status_text.insert(END, f"Error copying file {src_file_path} to {dest_file_path}: {e}\n")
-        status_text.see(END)
-        status_text.update()
+        update_status_text(f"Error copying file {src_file_path} to {dest_file_path}: {e}\n")
 
 def browse_src_directory():
     directory = filedialog.askdirectory()
@@ -53,13 +60,19 @@ def has_admin_permission(folder_path):
         return False
 
 def update_progress_bar(progress_bar):
-    if stop_sync_flag:
+    if sync_app.stop_sync_flag:
         progress_bar.stop()
-        progress_bar.grid_forget()
+        progress_bar.grid_remove()
         return
-    progress_bar.step(10)
-    root.after(100, lambda: update_progress_bar(progress_bar))
+    progress_bar.step(1)
+    root.after(300, lambda: update_progress_bar(progress_bar))
 
+def truncate_path(path, max_length):
+    if len(path) <= max_length:
+        return path
+    else:
+        return '...' + path[-(max_length - 3):]
+    
 def hash_file(file_path):
     chunk_size = 1024 * 1024  # 1 MB
     file_hash = xxhash.xxh64()
@@ -90,6 +103,17 @@ def should_copy(src_file_path, dest_file_path, use_hash):
 
 def is_system_directory(folder_path):
     return os.path.isdir(folder_path) and ctypes.windll.kernel32.GetFileAttributesW(folder_path) & 0x4 == 0x4
+
+def copy_file(src_file_path, dest_file_path, status_text):
+    try:
+        shutil.copy2(src_file_path, dest_file_path)
+        status_text.insert(END, f"Copied file: {dest_file_path}\n")
+        status_text.see(END)
+        status_text.update()
+    except Exception as e:
+        status_text.insert(END, f"Error copying file {src_file_path} to {dest_file_path}: {e}\n")
+        status_text.see(END)
+        status_text.update()
 
 def remove_excess_files_and_dirs(src, dest, status_text, remove_excess):
     global deleted_count
@@ -135,7 +159,6 @@ def remove_excess_files_and_dirs(src, dest, status_text, remove_excess):
             elif os.path.exists(src_dir_path) and dest_dir in dest_dirs:
                 dest_dirs.remove(dest_dir)
 
-
 def sync_directories(src, dest, status_text, progress_bar, use_hash, remove_excess):
     copied_count = 0
     global deleted_count
@@ -151,40 +174,46 @@ def sync_directories(src, dest, status_text, progress_bar, use_hash, remove_exce
                 dest_root = os.path.join(dest, os.path.relpath(src_root, src))
 
                 for src_dir in src_dirs:
+                    if stop_sync_flag:
+                        break
+                    
                     dest_dir = os.path.join(dest_root, src_dir)
                     if not os.path.exists(dest_dir):
                         try:
                             os.makedirs(dest_dir)
                             copied_count += 1
-                            status_text.insert(END, f"Created directory: {dest_dir}\n")
-                            status_text.see(END)
-                            status_text.update()
+                            root.after_idle(status_text.insert, END, f"Created directory: {dest_dir}\n")
+                            root.after_idle(status_text.see, END)
                         except Exception as e:
-                            status_text.insert(END, f"Error creating directory {dest_dir}: {e}\n")
-                            status_text.see(END)
-                            status_text.update()
+                            root.after_idle(status_text.insert, END, f"Error creating directory {dest_dir}: {e}\n")
+                            root.after_idle(status_text.see, END)
 
                 for src_file in src_files:
                     if stop_sync_flag:
                         break
+                    
                     src_file_path = os.path.join(src_root, src_file)
                     dest_file_path = os.path.join(dest_root, src_file)
                     if should_copy(src_file_path, dest_file_path, use_hash.get()):
                         copied_count += 1
                         executor.submit(copy_file, src_file_path, dest_file_path, status_text)
 
-                if stop_sync_flag:
-                    status_text.insert(END, "Synchronization stopped by user.\n")
-                    status_text.see(END)
-                    status_text.update()
-                    return copied_count, deleted_count
+                    # Update the current source file path label
+                    truncated_src_file_path = src_file_path[:50] + (src_file_path[50:] and '...')
+                    root.after_idle(current_file_var.set, f"Status: {truncated_src_file_path}")
+
+                    if stop_sync_flag:
+                        root.after_idle(status_text.insert, END, "Synchronization stopped by user.\n")
+                        root.after_idle(status_text.see, END)
+                        return copied_count, deleted_count
+
+                    time.sleep(0.01)  # Smoother progress_bar update
 
         remove_excess_files_and_dirs(src, dest, status_text, remove_excess.get())
 
     except Exception as e:
-        status_text.insert(END, f"Error during synchronization: {e}\n")
-        status_text.see(END)
-        status_text.update()
+        root.after_idle(status_text.insert, END, f"Error during synchronization: {e}\n")
+        root.after_idle(status_text.see, END)
     finally:
         progress_bar.stop()
         progress_bar.grid_forget()
@@ -217,11 +246,14 @@ def start_sync():
     status_text.see(END)
 
 def stop_sync():
+    sync_app.stop_sync_flag = True
     global stop_sync_flag
     stop_sync_flag = True
 
 root = Tk()
 root.title("Directory Synchronization")
+
+current_file_var = StringVar()
 
 mainframe = ttk.Frame(root, padding="12 12 12 12")
 mainframe.grid(column=0, row=0, sticky=(N, S, E, W))
@@ -254,8 +286,14 @@ progress_bar.grid_remove()
 stop_button = ttk.Button(mainframe, text="Stop", command=stop_sync)
 stop_button.grid(column=2, row=4, sticky=W)
 
+current_file_label = ttk.Label(mainframe, textvariable=current_file_var)
+current_file_label.grid(column=1, row=6, sticky=W)
+
+current_src_file_path = StringVar()
+current_src_file_label = ttk.Label(mainframe, textvariable=current_src_file_path)
 status_label = ttk.Label(mainframe, text="Status:")
-status_label.grid(column=0, row=5, sticky=W)
+status_label.grid(column=0, row=6, sticky=W)
+
 
 status_text = Text(mainframe, wrap="word", width=50, height=10)
 status_text.grid(column=1, row=5, sticky=(N, S, E, W))
